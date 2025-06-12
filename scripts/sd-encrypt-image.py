@@ -67,9 +67,9 @@ def hook_http_request(app: FastAPI):
                     decrypted_image_data = buffered.getvalue()
                     response: Response = Response(content=decrypted_image_data, media_type="image/png")
                     return response
-        
+
         return await call_next(req)
-    
+
 def set_shared_options():
     # 传递插件状态到前端
     section = ("encrypt_image_is_enable",'图片加密' if shared.opts.localization == 'zh_CN' else "encrypt image" )
@@ -91,7 +91,7 @@ def app_started_callback(_: Blocks, app: FastAPI):
         app.middleware_stack = None  # reset current middleware to allow modifying user provided list
         hook_http_request(app)
         app.build_middleware_stack()  # rebuild middleware stack on-the-fly
-    
+
 
 if PILImage.Image.__name__ != 'EncryptedImage':
     super_open = PILImage.open
@@ -100,7 +100,7 @@ if PILImage.Image.__name__ != 'EncryptedImage':
     super_api_middleware = api.api_middleware
     class EncryptedImage(PILImage.Image):
         __name__ = "EncryptedImage"
-        
+
         @staticmethod
         def from_image(image:PILImage.Image):
             image = image.copy()
@@ -121,7 +121,7 @@ if PILImage.Image.__name__ != 'EncryptedImage':
                     img.palette = ImagePalette.ImagePalette()
             img.info = image.info.copy()
             return img
-            
+
         def save(self, fp, format=None, **params):
             filename = ""
             if isinstance(fp, Path):
@@ -136,12 +136,12 @@ if PILImage.Image.__name__ != 'EncryptedImage':
             if not filename and hasattr(fp, "name") and _util.is_path(fp.name):
                 # only set the name for metadata purposes
                 filename = fp.name
-            
+
             if not filename or not password:
                 # 如果没有密码或不保存到硬盘，直接保存
                 super().save(fp, format = format, **params)
                 return
-            
+
             if 'Encrypt' in self.info and (self.info['Encrypt'] == 'pixel_shuffle' or self.info['Encrypt'] == 'pixel_shuffle_2' or self.info['Encrypt'] == 'pixel_shuffle_3'):
                 super().save(fp, format = format, **params)
                 return
@@ -183,7 +183,7 @@ if PILImage.Image.__name__ != 'EncryptedImage':
                 image = EncryptedImage.from_image(image=image)
                 return image
         return EncryptedImage.from_image(image=image)
-    
+
     def encode_pil_to_base64(image:PILImage.Image):
         with io.BytesIO() as output_bytes:
             pnginfo = image.info or {}
@@ -199,13 +199,13 @@ if PILImage.Image.__name__ != 'EncryptedImage':
             image.save(output_bytes, format="PNG", quality=opts.jpeg_quality)
             bytes_data = output_bytes.getvalue()
         return base64.b64encode(bytes_data)
-  
-  
+
+
     if password:
         PILImage.Image = EncryptedImage
         PILImage.open = open
         api.encode_pil_to_base64 = encode_pil_to_base64
-        
+
 if password:
     script_callbacks.on_app_started(app_started_callback)
     print('图片加密已经启动 加密方式 3')
