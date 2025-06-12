@@ -23,6 +23,13 @@ from modules import shared, script_callbacks, images
 from modules.paths_internal import models_path
 from modules.api import api
 
+# ANSI color codes for console output
+COLOR_RED = "\033[91m"
+COLOR_GREEN = "\033[92m"
+COLOR_YELLOW = "\033[93m"
+COLOR_BLUE = "\033[94m"
+COLOR_RESET = "\033[0m"
+
 # Constants
 ENCRYPT_PREFIX = "ENC:"  # Changed from OPPAI to more logical prefix
 TAG_LIST = ['parameters', 'UserComment']
@@ -46,7 +53,11 @@ class ImageEncryptionLogger:
     def log(message, level="info"):
         prefix = "[ImageEncryption]"
         if level == "error":
-            print(f"{prefix} ERROR: {message}")
+            print(f"{prefix} - {COLOR_RED}ERROR:{COLOR_RESET} {message}")
+        elif level == "warning":
+            print(f"{prefix} - {COLOR_YELLOW}WARNING:{COLOR_RESET} {message}")
+        elif level == "success":
+            print(f"{prefix} - {COLOR_GREEN}{message}{COLOR_RESET}")
         else:
             print(f"{prefix} - {message}")
 
@@ -594,4 +605,4 @@ elif not password:
     ImageEncryptionLogger.log("Disabled - missing password argument", "error")
 else:
     script_callbacks.on_app_started(on_app_started)
-    ImageEncryptionLogger.log("Enabled")
+    ImageEncryptionLogger.log("Enabled", "success")
