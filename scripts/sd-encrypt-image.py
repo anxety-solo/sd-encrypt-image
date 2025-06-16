@@ -24,10 +24,10 @@ from modules.paths_internal import models_path
 from modules.api import api
 
 # ANSI color codes for console output
-COLOR_RED = "\033[91m"
-COLOR_GREEN = "\033[92m"
-COLOR_YELLOW = "\033[93m"
-COLOR_BLUE = "\033[94m"
+COLOR_RED = "\033[31m"
+COLOR_GREEN = "\033[32m"
+COLOR_YELLOW = "\033[33m"
+COLOR_BLUE = "\033[34m"
 COLOR_RESET = "\033[0m"
 
 # Constants
@@ -597,6 +597,64 @@ if PILImage.Image.__name__ != 'EncryptedImage':
     watcher = FileWatcher([Models, Embed], set(IMAGE_EXTENSIONS))
     watcher.start()
     ImageEncryptionLogger.log("File watcher started")
+
+
+# Fix XYZ-Plot Saving Encrypt-Image
+def save_image_with_geninfo(image, geninfo, filename, extension=None, existing_pnginfo=None, pnginfo_section_name=None):
+    """
+    Save image with generation info, supporting all formats in IMAGE_EXTENSIONS.
+    Handles encryption for both single images and XYZ grids.
+    """
+    try:
+        # Determine file extension if not provided
+        if extension is None:
+            extension = os.path.splitext(filename)[1].lower()
+
+        # Prepare metadata
+        parameters = geninfo
+        metadata = existing_pnginfo or {}
+
+        # For encrypted images, prepare special handling
+        if password and extension in IMAGE_EXTENSIONS:
+            # Create encrypted metadata
+            encrypted_metadata = encrypt_tags(metadata, password)
+            encrypted_metadata[pnginfo_section_name or 'parameters'] = parameters
+
+            # Create new image object for encryption
+            enc_image = EncryptedImage.from_image(image)
+            enc_image.info = encrypted_metadata
+
+            # Special handling for PNG to preserve metadata
+            if extension == '.png':
+                pnginfo = PngImagePlugin.PngInfo()
+                for k, v in encrypted_metadata.items():
+                    if v: pnginfo.add_text(k, str(v))
+                enc_image.save(filename, format='PNG', pnginfo=pnginfo)
+            else:
+                # For non-PNG formats, we can't store metadata as extensively
+                enc_image.save(filename, quality=shared.opts.jpeg_quality)
+
+            enc_image.close()
+        else:
+            # Standard saving for non-encrypted or unsupported formats
+            if extension == '.png':
+                pnginfo = PngImagePlugin.PngInfo()
+                pnginfo.add_text(pnginfo_section_name or 'parameters', parameters)
+                if existing_pnginfo:
+                    for k, v in existing_pnginfo.items():
+                        if k != pnginfo_section_name and v:
+                            pnginfo.add_text(k, str(v))
+                image.save(filename, format='PNG', pnginfo=pnginfo)
+            else:
+                image.save(filename, quality=shared.opts.jpeg_quality)
+
+    except Exception as e:
+        ImageEncryptionLogger.log(f"Error saving image {filename}: {e}", "error")
+        raise
+
+# Replace the original save_image_with_geninfo in images module
+images.save_image_with_geninfo = save_image_with_geninfo
+
 
 # Handle different password states
 if password == '':
