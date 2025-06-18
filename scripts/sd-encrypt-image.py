@@ -478,8 +478,8 @@ class FileWatcher:
 
 async def handle_image_request(endpoint, query, full_path, response_builder):
     # Handle sd-hub-gallery endpoint
-    if endpoint.startswith('/sd-hub-gallery/image'):
-        img_path = endpoint[len('/sd-hub-gallery/image'):]
+    if endpoint.startswith('/sd-hub-gallery/image='):
+        img_path = endpoint[len('/sd-hub-gallery/image='):]
         if img_path:
             endpoint = f'/file={img_path}'
 
