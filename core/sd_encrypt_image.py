@@ -6,15 +6,15 @@ from pathlib import Path
 from PIL import Image
 import gradio as gr
 import numpy as np
-import hashlib
 import asyncio
+import hashlib
 import base64
 import sys
 import io
 import os
 
-from modules import shared, script_callbacks, images
 from modules.paths_internal import models_path
+from modules import shared, images
 from modules.api import api
 
 # ANSI color codes for console output
@@ -579,7 +579,7 @@ def save_image_with_geninfo(image, geninfo, filename, extension=None, existing_p
         ImageEncryptionLogger.log(f"Error saving image {filename}: {e}", "error")
         raise
 
-def on_app_started(_: gr.Blocks, app: FastAPI):
+def app(_: gr.Blocks, app: FastAPI):
     """Initialize the application when started"""
     # Setup appropriate middleware based on platform
     if not FORGE_AVAILABLE:
@@ -605,12 +605,3 @@ if PILImage.Image.__name__ != 'EncryptedImage':
 
         # Replace the original save function
         images.save_image_with_geninfo = save_image_with_geninfo
-
-        # Register app startup callback
-        script_callbacks.on_app_started(on_app_started)
-        ImageEncryptionLogger.log("Enabled V2", "success")
-    else:
-        if password == '':
-            ImageEncryptionLogger.log("Disabled - empty password provided", "error")
-        else:
-            ImageEncryptionLogger.log("Disabled - no password argument provided", "error")
