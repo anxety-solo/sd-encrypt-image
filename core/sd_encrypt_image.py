@@ -17,19 +17,21 @@ from modules.paths_internal import models_path
 from modules import shared, images
 from modules.api import api
 
+
 # ANSI color codes for console output
-COLOR_RED = "\033[31m"
-COLOR_GREEN = "\033[32m"
-COLOR_YELLOW = "\033[33m"
-COLOR_BLUE = "\033[34m"
-COLOR_RESET = "\033[0m"
+COLOR_RED = '\033[31m'
+COLOR_GREEN = '\033[32m'
+COLOR_YELLOW = '\033[33m'
+COLOR_BLUE = '\033[34m'
+COLOR_RESET = '\033[0m'
 
 # Configuration constants
-ENCRYPT_PREFIX = "ENC:"
+ENCRYPT_PREFIX = 'ENC:'
 TAG_LIST = ['parameters', 'UserComment']
 IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.avif']
 IMAGE_KEYS = ['Encrypt', 'EncryptPwdSha']
-HEADERS = {"Cache-Control": "public, max-age=2592000"}
+HEADERS = {'Cache-Control': 'public, max-age=2592000'}
+
 
 # Check for Forge availability
 try:
@@ -43,17 +45,18 @@ password = getattr(shared.cmd_opts, 'encrypt_pass', None)
 embed_dir = shared.cmd_opts.embeddings_dir
 models_dir = Path(models_path)
 
+
 class ImageEncryptionLogger:
     """Centralized logging for image encryption operations"""
 
     @staticmethod
-    def log(message, level="info"):
-        prefix = "[ImageEncryption]"
-        if level == "error":
+    def log(message, level='info'):
+        prefix = '[ImageEncryption]'
+        if level == 'error':
             print(f"{prefix} - {COLOR_RED}ERROR:{COLOR_RESET} {message}")
-        elif level == "warning":
+        elif level == 'warning':
             print(f"{prefix} - {COLOR_YELLOW}WARNING:{COLOR_RESET} {message}")
-        elif level == "success":
+        elif level == 'success':
             print(f"{prefix} - {COLOR_GREEN}{message}{COLOR_RESET}")
         else:
             print(f"{prefix} - {message}")
@@ -87,9 +90,9 @@ def encrypt_tags(metadata, password):
             encrypted_value = ''.join(
                 chr(ord(c) ^ ord(password[i % len(password)]))
                 for i, c in enumerate(value)
-            )
+            ).encode('utf-8')
             # Base64 encode the encrypted value
-            encrypted_value = base64.b64encode(encrypted_value.encode('utf-8')).decode('utf-8')
+            encrypted_value = base64.b64encode(encrypted_value).decode('utf-8')
             encrypted_metadata[key] = f"{ENCRYPT_PREFIX}{encrypted_value}"
     return encrypted_metadata
 
@@ -109,7 +112,7 @@ def decrypt_tags(metadata, password):
                 )
                 decrypted_metadata[key] = decrypted_value
             except Exception as e:
-                ImageEncryptionLogger.log(f"Failed to decrypt tag {key}: {e}", "error")
+                ImageEncryptionLogger.log(f"Failed to decrypt tag {key}: {e}", 'error')
                 decrypted_metadata[key] = metadata[key]
     return decrypted_metadata
 
@@ -229,6 +232,16 @@ class EncryptedImage(PILImage.Image):
             super().save(fp, format=format, **params)
             return
 
+        # Check if the file is being saved into a special directory (models_dir or embed_dir).
+        # If so, ensure the image is in PNG format, as required for encryption and compatibility.
+        file_path = Path(getattr(fp, 'name', fp)) if not isinstance(fp, Path) else fp
+        if any(special_dir in file_path.parents for special_dir in (models_dir, embed_dir)):
+            if (self.format or '').upper() != 'PNG':
+                png_image = PILImage.new('RGBA', self.size)
+                png_image.paste(self)
+                self = png_image
+                self.format = 'PNG'
+
         # Encrypt metadata
         encrypted_info = encrypt_tags(self.info, password)
         pnginfo = params.get('pnginfo', PngImagePlugin.PngInfo()) or PngImagePlugin.PngInfo()
@@ -241,7 +254,7 @@ class EncryptedImage(PILImage.Image):
             # Encrypt image pixels
             encrypted_img = PILImage.fromarray(encrypt_image(self, get_sha256(password)))
             self.paste(encrypted_img)
-            encrypted_img.close()
+            # encrypted_img.close()
         except Exception as e:
             if "axes don't match array" in str(e):
                 # Handle dimension mismatch by removing file
@@ -328,7 +341,7 @@ _semaphore_factory = lambda: asyncio.Semaphore(min(os.cpu_count() * 2, 10))
 _semaphores = {}
 p_cache = {}
 
-def resize_image(image, target_height=500):
+def resize_image(image, target_height=512):
     """Resize image maintaining aspect ratio"""
     width, height = image.size
     if height > target_height:
@@ -421,20 +434,19 @@ def process_image_file(fp, should_resize):
                     info.add_text(key, str(value))
 
             image.save(buffered, format=PngImagePlugin.PngImageFile.format, pnginfo=info)
-            image.close()
+            # image.close()
             return buffered.getvalue()
     except Exception as e:
         ImageEncryptionLogger.log(f"Processing error for {fp}: {e}", "error")
         return None
 
-async def handle_image_request(endpoint, query, full_path, response_builder):
-    """Handle HTTP requests for images with proper endpoint parsing"""
-
+def _process_query(endpoint, query):
+    """Process endpoint and query string to extract file path for image requests"""
     # Handle sd-hub-gallery endpoint
     if endpoint.startswith('/sd-hub-gallery/image='):
         img_path = endpoint[len('/sd-hub-gallery/image='):]
         if img_path:
-            endpoint = f'/file={img_path}'
+            return f'/file={img_path}'
 
     # Handle infinite image browsing endpoints
     if endpoint.startswith(('/infinite_image_browsing/image-thumbnail', '/infinite_image_browsing/file')):
@@ -446,14 +458,21 @@ async def handle_image_request(endpoint, query, full_path, response_builder):
                 if sub.startswith('path='):
                     path = sub[sub.index('=')+1:]
             if path:
-                endpoint = f'/file={path}'
+                return f'/file={path}'
 
     # Handle extra networks thumbnail endpoint
     if endpoint.startswith('/sd_extra_networks/thumb'):
         query_string = unquote(query())
         filename = next((sub.split('=')[1] for sub in query_string.split('&') if sub.startswith('filename=')), '')
         if filename:
-            endpoint = f'/file={filename}'
+            return f'/file={filename}'
+
+    return endpoint
+
+async def handle_image_request(endpoint, query, full_path, response_builder):
+    """Handle HTTP requests for images with proper endpoint parsing"""
+
+    endpoint = _process_query(endpoint, query)
 
     # Process file requests
     if endpoint.startswith('/file='):
@@ -461,7 +480,7 @@ async def handle_image_request(endpoint, query, full_path, response_builder):
         ext = fp.suffix.lower().split('?')[0]
 
         # Skip preview placeholder images
-        if 'card-no-preview.png' in str(fp):
+        if 'card-no-preview.' in str(fp):
             return False, None
 
         # Process image files
@@ -591,7 +610,6 @@ def app(_: gr.Blocks, app: FastAPI):
 
 # Initialize the encryption system
 if PILImage.Image.__name__ != 'EncryptedImage':
-    # Store original functions
     super_open = PILImage.open
     super_encode_pil_to_base64 = api.encode_pil_to_base64
     super_modules_images_save_image = images.save_image
