@@ -609,4 +609,4 @@ if PILImage.Image.__name__ != 'EncryptedImage':
         api.encode_pil_to_base64 = encode_pil_to_base64
 
         # Replace the original save function
-        # images.save_image_with_geninfo = save_image_with_geninfo # TODO: Fix this
+        images.save_image_with_geninfo = save_image_with_geninfo # TODO: Fix this

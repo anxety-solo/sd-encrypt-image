@@ -1,7 +1,7 @@
 from modules.script_callbacks import on_app_started
-from core.sd_encrypt_image import ImageEncryptionLogger, password, app
+from sd_image_encryption import ImageEncryptionLogger, password, app
 
-EncryptVersion = 2.55
+EncryptVersion = 2.6
 
 if password == '':
     ImageEncryptionLogger.log('Disabled - empty password provided', 'error')
