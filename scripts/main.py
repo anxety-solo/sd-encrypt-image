@@ -1,12 +1,12 @@
+from sd_image_encryption import log, password, app
 from modules.script_callbacks import on_app_started
-from sd_image_encryption import ImageEncryptionLogger, password, app
 
-EncryptVersion = 2.6
+EncryptVersion = 3.0
 
 if password == '':
-    ImageEncryptionLogger.log('Disabled - empty password provided', 'error')
+    log.error('Disabled - empty password provided')
 elif not password:
-    ImageEncryptionLogger.log('Disabled - no password argument provided', 'error')
+    log.error('Disabled - no password argument provided')
 else:
-    ImageEncryptionLogger.log(f"Enabled V{EncryptVersion}", 'success')
+    log.info(f"Enabled V{EncryptVersion}")
     on_app_started(app)
