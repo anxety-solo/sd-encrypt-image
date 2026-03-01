@@ -12,7 +12,6 @@ from PIL.PngImagePlugin import PngInfo
 from urllib.parse import unquote
 from packaging import version
 from pathlib import Path
-from PIL import Image
 from PIL import Image as PILImage, PngImagePlugin, _util, ImagePalette
 
 from modules.paths_internal import models_path
@@ -41,23 +40,24 @@ models_dir = Path(models_path)
 
 class Logger:
     """Coloured console logger for image encryption events"""
+    _PREFIX = '\033[34m[ImageEncryption]\033[0m -'
     _COLORS = {
-        'info': '\033[34m',
+        'info':    '\033[34m',
         'success': '\033[32m',
         'warning': '\033[33m',
-        'error': '\033[31m',
+        'error':   '\033[31m',
     }
     _RESET = '\033[0m'
 
-    def _log(self, level: str, msg: str) -> None:
+    def _log(self, level: str, msg: str):
         color = self._COLORS[level]
-        tag = f" [{level.upper()}]:" if level in ('warning', 'error') else ''
-        print(f"{color}[ImageEncryption]:{self._RESET}{tag} {msg}")
+        tag = f" [{level.upper()}] -" if level in ('warning', 'error') else ''
+        print(f"{self._PREFIX}{tag} {color}{msg}{self._RESET}")
 
-    def info(self, msg: str) -> None:    self._log('info', msg)
-    def success(self, msg: str) -> None: self._log('success', msg)
-    def warning(self, msg: str) -> None: self._log('warning', msg)
-    def error(self, msg: str) -> None:   self._log('error', msg)
+    def info(self, msg: str):    self._log('info', msg)
+    def success(self, msg: str): self._log('success', msg)
+    def warning(self, msg: str): self._log('warning', msg)
+    def error(self, msg: str):   self._log('error', msg)
 
 log = Logger()
 
@@ -85,23 +85,7 @@ def _shuffle(arr: np.ndarray, key: str) -> np.ndarray:
 
 def _xor_str(text: str, pwd: str) -> str:
     """XOR each character of text against the repeating password"""
-    return ''.join(
-        chr(ord(c) ^ ord(pwd[i % len(pwd)]))
-        for i, c in enumerate(text)
-    )
-
-def _build_pnginfo(meta: dict, extra: dict | None = None) -> PngInfo:
-    """Build PngInfo from a metadata dict, skipping IMAGE_KEYS; extra keys are appended last"""
-    pnginfo = PngInfo()
-    for k, v in meta.items():
-        if v is not None and k not in IMAGE_KEYS:
-            try:
-                pnginfo.add_text(k, str(v))
-            except Exception:
-                pass
-    for k, v in (extra or {}).items():
-        pnginfo.add_text(k, v)
-    return pnginfo
+    return ''.join(chr(ord(c) ^ ord(pwd[i % len(pwd)])) for i, c in enumerate(text))
 
 
 # ~~ Metadata encryption / decryption ~~
@@ -122,8 +106,7 @@ def decrypt_tags(metadata: dict, pwd: str) -> dict:
         val = str(out.get(key, ''))
         if val.startswith(ENCRYPT_PREFIX):
             try:
-                raw = base64.b64decode(val[len(ENCRYPT_PREFIX):]).decode()
-                out[key] = _xor_str(raw, pwd)
+                out[key] = _xor_str(base64.b64decode(val[len(ENCRYPT_PREFIX):]).decode(), pwd)
             except Exception:
                 pass
     return out
@@ -136,15 +119,15 @@ def _permute_image(image: PILImage.Image, pwd: str, inverse: bool = False) -> np
     try:
         if image.mode != 'RGBA':
             image = image.convert('RGBA')
-
+            
         w, h = image.size
         px = np.array(image, dtype=np.uint8)
-
+        
         y_perm = _shuffle(np.arange(h), get_sha256(pwd))
         x_perm = _shuffle(np.arange(w), pwd)
         if inverse:
             y_perm, x_perm = np.argsort(y_perm), np.argsort(x_perm)
-
+            
         return px[y_perm].transpose(1, 0, 2)[x_perm].transpose(1, 0, 2)
     except Exception as e:
         if MISMATCH_ERROR not in str(e):
@@ -186,7 +169,7 @@ class EncryptedImage(PILImage.Image):
         return img
 
     def save(self, fp, format=None, **params):
-        """Save the image, encrypting pixels and metadata on the fly; on error log and abort"""
+        """Save the image, encrypting pixels and metadata on the fly"""
         filename = ''
         if isinstance(fp, Path):
             filename = str(fp)
@@ -218,7 +201,7 @@ class EncryptedImage(PILImage.Image):
             self.paste(PILImage.fromarray(encrypt_image(self, get_sha256(password))))
         except Exception as e:
             if MISMATCH_ERROR in str(e):
-                os.system(f'rm -f {filename}')
+                os.system(f"rm -f {filename}")
                 return
             raise
 
@@ -226,7 +209,7 @@ class EncryptedImage(PILImage.Image):
             if value:
                 pnginfo.add_text(key, str(value))
         pnginfo.add_text('Encrypt', ENCRYPT_MARKER)
-        pnginfo.add_text('EncryptPwdSha', get_sha256(f'{get_sha256(password)}Encrypt'))
+        pnginfo.add_text('EncryptPwdSha', get_sha256(f"{get_sha256(password)}Encrypt"))
 
         params.update(pnginfo=pnginfo)
         self.format = PngImagePlugin.PngImageFile.format
@@ -238,32 +221,42 @@ class EncryptedImage(PILImage.Image):
 # ~~ PIL monkey-patch ~~
 
 def _patched_open(fp, *args, **kwargs):
-    """Patched PILImage.open that transparently decrypts encrypted PNG files"""
+    """Patched PILImage.open — transparently decrypts encrypted PNG files"""
     try:
+        if isinstance(fp, bytes):
+            fp = io.BytesIO(fp)
+
         if not _util.is_path(fp) or not Path(fp).suffix:
             return _pil_open_original(fp, *args, **kwargs)
 
         img = _pil_open_original(fp, *args, **kwargs)
-
-        if password and img.format and img.format.lower() == 'png':
-            meta = decrypt_tags(img.info or {}, password)
-            if meta.get('Encrypt') == ENCRYPT_MARKER:
-                img.paste(PILImage.fromarray(decrypt_image(img, get_sha256(password))))
-                meta['Encrypt'] = None
+        try:
+            meta = img.info or {}
+            if password and img.format and img.format.lower() == 'png':
+                meta = decrypt_tags(meta, password)
+                if meta.get('Encrypt') == ENCRYPT_MARKER:
+                    img.paste(PILImage.fromarray(decrypt_image(img, get_sha256(password))))
+                    meta['Encrypt'] = None
             img.info = meta
-        return EncryptedImage.from_image(img)
-    except Exception:
-        return _pil_open_original(fp, *args, **kwargs)
+            return EncryptedImage.from_image(img)
+        except Exception as e:
+            log.error(f"_patched_open({fp}): {e}")
+            return None
+        finally:
+            img.close()
+    except Exception as e:
+        log.error(f"_patched_open({fp}): {e}")
+        return None
 
 def encode_pil_to_base64(img: PILImage.Image):
-    """Convert PIL image to base64 with automatic decryption"""
+    """Convert PIL image to base64-encoded PNG, decrypting pixels and metadata if needed"""
     meta = img.info or {}
     with io.BytesIO() as buf:
         meta = decrypt_tags(meta, password)
         if meta.get('Encrypt') == ENCRYPT_MARKER:
             img.paste(PILImage.fromarray(decrypt_image(img, get_sha256(password))))
         meta['Encrypt'] = None
-        img.save(buf, format='PNG', quality=shared.opts.jpeg_quality)
+        img.save(buf, format=PngImagePlugin.PngImageFile.format, quality=shared.opts.jpeg_quality)
         return base64.b64encode(buf.getvalue())
 
 
@@ -281,61 +274,64 @@ def _get_semaphore():
     return _semaphore_cache[loop]
 
 def _resize_image(image, target_height=512):
-    """Resize image maintaining aspect ratio"""
+    """Resize image to target_height maintaining aspect ratio"""
     w, h = image.size
     if h > target_height:
         new_w = int(target_height * w / h)
         return image.resize((new_w, target_height), PILImage.Resampling.LANCZOS)
     return image
 
-def _should_skip(fp: Path) -> bool:
-    """Return True for files that must be skipped by the encryption middleware"""
-    return any(p in fp.name for p in SKIP_PATTERNS)
-
 def process_image_file(fp: Path, should_resize: bool) -> bytes | None:
-    """Encrypt the file on disk if needed, then return decrypted PNG bytes for the HTTP response"""
+    """Encrypt the file on disk if needed, return decrypted PNG bytes for the HTTP response"""
     try:
-        img = _pil_open_original(str(fp))
-        img.load()
-        meta = img.info or {}
-
-        if should_resize:
-            img = _resize_image(img)
-
-        if not all(k in meta for k in IMAGE_KEYS):
+        with PILImage.open(str(fp)) as image:
             try:
-                EncryptedImage.from_image(img).save(str(fp))
-                img.close()
-                img = _pil_open_original(str(fp))
-                img.load()
-                meta = img.info or {}
+                image.verify()
             except Exception as e:
-                log.error(f"process_image_file encrypt({fp.name}): {e}")
-                img.close()
+                log.error(f"Invalid image file: {fp.name}: {e}")
                 return None
-        elif should_resize:
-            img.save(str(fp))
 
-        if meta.get('Encrypt') == ENCRYPT_MARKER:
-            clear_meta = decrypt_tags(meta, password)
-            display = PILImage.fromarray(decrypt_image(img, get_sha256(password)))
-        else:
-            clear_meta = meta
-            display = img
+            if should_resize:
+                image = _resize_image(image)
+                image.save(str(fp))  # real path → EncryptedImage.save → encrypted to disk
 
-        buf = io.BytesIO()
-        display.save(buf, format='PNG', pnginfo=_build_pnginfo(clear_meta))
-        if display is not img:
-            display.close()
-        img.close()
-        return buf.getvalue()
+            pnginfo = image.info or {}
+
+            if not all(k in pnginfo for k in IMAGE_KEYS):
+                try:
+                    EncryptedImage.from_image(image).save(str(fp))
+                    image = PILImage.open(str(fp))
+                    pnginfo = image.info or {}
+                except Exception as e:
+                    log.error(f"process_image_file encrypt({fp.name}): {e}")
+                    return None
+
+            buf = io.BytesIO()
+            info = PngImagePlugin.PngInfo()
+            for key, value in pnginfo.items():
+                if value is None or key == 'icc_profile':
+                    continue
+                if isinstance(value, bytes):
+                    for enc in ('utf-8', 'utf-16'):
+                        try:
+                            info.add_text(key, value.decode(enc))
+                            break
+                        except (UnicodeDecodeError, Exception):
+                            pass
+                    else:
+                        log.warning(f"Cannot decode bytes key '{key}' in {fp.name}")
+                else:
+                    info.add_text(key, str(value))
+
+            image.save(buf, format=PngImagePlugin.PngImageFile.format, pnginfo=info)
+            return buf.getvalue()
 
     except Exception as e:
         log.error(f"process_image_file({fp.name}): {e}")
         return None
 
 async def serve_image(fp: Path, should_resize: bool):
-    """Async wrapper around process_image_file with semaphore and cache"""
+    """Async wrapper: semaphore-limited, per-request dedup cache, fallback to raw read"""
     semaphore = _get_semaphore()
     try:
         async with semaphore:
@@ -348,61 +344,62 @@ async def serve_image(fp: Path, should_resize: bool):
             except Exception as e:
                 log.error(f"serve_image({fp.name}): {e}")
                 content = None
-
             if content:
                 _response_cache[fp] = content
             return content
+    except Exception as e:
+        log.error(f"serve_image semaphore({fp.name}): {e}")
+        try:
+            with open(str(fp), 'rb') as f:
+                return f.read()
+        except Exception as ie:
+            log.error(f"serve_image fallback({fp.name}): {ie}")
+            return None
     finally:
         _response_cache.pop(fp, None)
 
 
 # ~~ HTTP middleware ~~
 
-def _resolve_file_path(endpoint: str, query_str: str) -> Path | None:
-    """Dynamically extract a filesystem path from any request"""
-    # 1. Standard /file= prefix
-    if endpoint.startswith('/file='):
-        raw = endpoint[6:].split('?')[0]
-        if raw:
-            return Path(raw)
+def _query_param(query_str: str, prefix: str) -> str:
+    """Return value of the first query param whose key matches prefix"""
+    return next((part.split('=', 1)[1] for part in query_str.split('&') if part.startswith(prefix)), '')
 
-    # 2. Any URL of the form /prefix=<path> where <path> looks like a file
-    if '=' in endpoint:
-        raw = endpoint.split('=', 1)[1].split('?')[0]
-        p = Path(raw)
-        if p.suffix.lower() in IMAGE_EXTENSIONS and p.exists():
-            return p
-
-    # 3. Any query param whose decoded value points to an existing image file
-    for part in query_str.split('&'):
-        if '=' not in part:
-            continue
-        val = part.split('=', 1)[1]
-        p = Path(val)
-        if p.suffix.lower() in IMAGE_EXTENSIONS and p.exists():
-            return p
-
-    return None
-
-async def handle_image_request(endpoint: str, query, full_path, res):
-    """Resolve endpoint → file path, encrypt on disk, serve decrypted bytes"""
+async def handle_image_request(endpoint: str, query, res):
+    """Resolve known endpoints to a file path, encrypt on disk, serve decrypted bytes"""
     query_str = unquote(query())
 
-    fp = _resolve_file_path(endpoint, query_str)
-    if fp is None:
+    # sd-hub gallery: /sdhub-gallery-image=<path>
+    if endpoint.startswith('/sdhub-gallery-image='):
+        img_path = endpoint[len('/sdhub-gallery-image='):]
+        if img_path:
+            endpoint = f"/file={img_path}"
+
+    # infinite-image-browsing: path in query string
+    if endpoint.startswith(('/infinite_image_browsing/image-thumbnail', '/infinite_image_browsing/file')):
+        path = _query_param(query_str, 'path=')
+        if path:
+            endpoint = f"/file={path}"
+
+    # extra networks thumbnail: filename in query string
+    if endpoint.startswith('/sd_extra_networks/thumb'):
+        fn = _query_param(query_str, 'filename=')
+        if fn:
+            endpoint = f"/file={fn}"
+
+    if not endpoint.startswith('/file='):
         return False, None
 
-    if _should_skip(fp):
+    fp = Path(endpoint[6:])
+    if any(p in fp.name for p in SKIP_PATTERNS):
         return False, None
-
-    if fp.suffix.lower() not in IMAGE_EXTENSIONS:
+    if fp.suffix.lower().split('?')[0] not in IMAGE_EXTENSIONS:
         return False, None
 
     should_resize = str(models_dir) in str(fp) or str(embed_dir) in str(fp)
     content = await serve_image(fp, should_resize)
     if content:
         return True, res(content)
-
     return False, None
 
 def register_middleware_gradio3(app: FastAPI):
@@ -412,8 +409,7 @@ def register_middleware_gradio3(app: FastAPI):
         endpoint = '/' + req.scope.get('path', 'err').strip('/')
         def query(): return req.scope.get('query_string', b'').decode('utf-8')
         def res(c): return Response(content=c, media_type='image/png', headers=HEADERS)
-
-        ok, response = await handle_image_request(endpoint=endpoint, query=query, full_path=Path, res=res)
+        ok, response = await handle_image_request(endpoint, query, res)
         return response if ok else await call_next(req)
 
 def register_middleware_gradio4(app):
@@ -430,8 +426,7 @@ def register_middleware_gradio4(app):
                 endpoint = '/' + scope.get('path', 'err').strip('/')
                 def query(): return scope.get('query_string', b'').decode('utf-8')
                 def res(c): return starlette_resp.Response(content=c, media_type='image/png', headers=HEADERS)
-
-                ok, response = await handle_image_request(endpoint=endpoint, query=query, full_path=Path, res=res)
+                ok, response = await handle_image_request(endpoint, query, res)
                 if ok:
                     await response(scope, receive, send)
                     return
@@ -443,31 +438,21 @@ def register_middleware_gradio4(app):
 # ~~ save_image_with_geninfo ~~
 
 def save_image_with_geninfo(image, geninfo, filename, extension=None, existing_pnginfo=None, pnginfo_section_name=None):
-    """Save image with generation info, supporting encryption for all formats"""
+    """Save image with generation info, encrypting automatically via EncryptedImage.save"""
     try:
         if extension is None:
             extension = os.path.splitext(filename)[1].lower()
 
-        meta = existing_pnginfo or {}
-
-        if password and extension in IMAGE_EXTENSIONS:
-            enc_meta = encrypt_tags(meta, password)
-            enc_meta[pnginfo_section_name or 'parameters'] = geninfo
-
+        if password:
             enc_img = EncryptedImage.from_image(image)
-            enc_img.info = enc_meta
-
-            if extension == '.png':
-                enc_img.save(filename, format='PNG', pnginfo=_build_pnginfo(enc_meta))
-            else:
-                enc_img.save(filename, quality=shared.opts.jpeg_quality)
-
+            enc_img.info = {**(existing_pnginfo or {}), (pnginfo_section_name or 'parameters'): geninfo}
+            enc_img.save(filename, quality=shared.opts.jpeg_quality if extension != '.png' else None)
             enc_img.close()
         else:
             if extension == '.png':
                 pi = PngInfo()
                 pi.add_text(pnginfo_section_name or 'parameters', geninfo)
-                for k, v in meta.items():
+                for k, v in (existing_pnginfo or {}).items():
                     if k != pnginfo_section_name and v:
                         pi.add_text(k, str(v))
                 image.save(filename, format='PNG', pnginfo=pi)
@@ -482,7 +467,7 @@ def save_image_with_geninfo(image, geninfo, filename, extension=None, existing_p
 # ~~ App startup ~~
 
 def app(_: gr.Blocks, app: FastAPI):
-    """Initialize the application when started"""
+    """Register the appropriate middleware based on Gradio version"""
     if version.parse(gr.__version__).major > 3:
         register_middleware_gradio4(app)
     else:
@@ -502,4 +487,4 @@ if PILImage.Image.__name__ != 'EncryptedImage':
         PILImage.Image = EncryptedImage
         PILImage.open = _patched_open
         api.encode_pil_to_base64 = encode_pil_to_base64
-        images.save_image_with_geninfo = save_image_with_geninfo  # TODO: Fix this
+        # images.save_image_with_geninfo = save_image_with_geninfo  # TODO: Fix this
